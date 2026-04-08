@@ -9,6 +9,8 @@ import (
 	"agent-stock/internal/format"
 	"agent-stock/internal/indicator"
 	"agent-stock/internal/provider/eastmoney"
+	"agent-stock/internal/provider/multi"
+	"agent-stock/internal/provider/sina"
 )
 
 type KlineCommand struct{}
@@ -43,7 +45,7 @@ func (c *KlineCommand) Run(ctx context.Context, args []string, out io.Writer, er
 	}
 
 	symbol := rest[0]
-	p := eastmoney.New()
+	p := multi.New(eastmoney.New(), sina.New())
 	kl, err := p.KlineDaily(ctx, symbol, *limit)
 	if err != nil {
 		return err
@@ -75,7 +77,7 @@ func (c *KlineCommand) Run(ctx context.Context, args []string, out io.Writer, er
 	}
 
 	t := format.NewTable(out)
-	t.Header("DATE", "O", "H", "L", "C", "VOL", "EMA12", "EMA26", "BOLL(M/U/L)", "KDJ(K/D/J)", "RSI(6/12/24)")
+	t.Header("DATE(日期)", "O(开)", "H(高)", "L(低)", "C(收)", "VOL(量)", "EMA12(12日)", "EMA26(26日)", "BOLL(M/U/L)", "KDJ(K/D/J)", "RSI(6/12/24)")
 	for i := start; i < len(kl.Bars); i++ {
 		b := kl.Bars[i]
 		t.Row(

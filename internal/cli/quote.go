@@ -9,6 +9,8 @@ import (
 
 	"agent-stock/internal/format"
 	"agent-stock/internal/provider/eastmoney"
+	"agent-stock/internal/provider/multi"
+	"agent-stock/internal/provider/sina"
 )
 
 type QuoteCommand struct{}
@@ -44,19 +46,16 @@ func (c *QuoteCommand) Run(ctx context.Context, args []string, out io.Writer, er
 	}
 
 	symbols := strings.Split(rest[0], ",")
-	p := eastmoney.New()
+	p := multi.New(eastmoney.New(), sina.New())
 	quotes, err := p.Quote(ctx, symbols)
 	if err != nil {
 		return err
 	}
 
 	t := format.NewTable(out)
-	t.Header("SYMBOL", "NAME", "PRICE", "CHG", "CHG%", "OPEN", "HIGH", "LOW", "VOL", "AMT", "TIME")
+	t.Header("SYMBOL(股票代码)", "NAME(名称)", "PRICE(价格)", "CHG(涨跌额)", "CHG%(涨跌幅)", "OPEN(开)", "HIGH(高)", "LOW(低)", "VOL(量)", "AMT(额)", "TIME(时间)")
 	for _, q := range quotes {
 		t.Row(q.Symbol, q.Name, f2(q.Price), f2(q.Change), f2(q.ChangePct), f2(q.Open), f2(q.High), f2(q.Low), f0(q.Volume), f0(q.Amount), q.Time)
 	}
 	return t.Flush()
 }
-
-func f2(v float64) string { return fmt.Sprintf("%.2f", v) }
-func f0(v float64) string { return fmt.Sprintf("%.0f", v) }

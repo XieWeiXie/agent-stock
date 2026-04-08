@@ -41,10 +41,15 @@ stock kline 000001
 - `stock quote <symbols>`
 - `stock rank --market ab --sort <sort> --count <count>`
 - `stock kline <symbol>`
+- `stock detail <symbol>`
+- `stock news <symbol>`
+- `stock fundflow <symbol>`
+- `stock plate <symbol>`
+- `stock chgdiagram`
 
 占位（可运行但未实现业务逻辑）：
 
-- `chgdiagram` / `heatmap` / `query` / `detail` / `plate` / `news` / `fundflow`
+- `heatmap` / `query`
 
 ## 数据来源
 

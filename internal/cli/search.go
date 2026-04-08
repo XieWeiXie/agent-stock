@@ -52,7 +52,7 @@ func (c *SearchCommand) Run(ctx context.Context, args []string, out io.Writer, e
 	}
 
 	t := format.NewTable(out)
-	t.Header("SYMBOL", "NAME", "MARKET")
+	t.Header("SYMBOL(代码)", "NAME(名称)", "MARKET(市场)")
 	for _, it := range items {
 		t.Row(it.Symbol, it.Name, string(it.Market))
 	}

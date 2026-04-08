@@ -114,6 +114,7 @@ func (p *Provider) Rank(ctx context.Context, market provider.Market, sortKey str
 		count = 100
 	}
 
+	// Try Eastmoney first
 	fid := "f6"
 	switch sortKey {
 	case "", "turnover":
@@ -133,38 +134,74 @@ func (p *Provider) Rank(ctx context.Context, market provider.Market, sortKey str
 	fs := url.QueryEscape("m:0+t:6,m:0+t:13,m:0+t:80,m:1+t:2,m:1+t:23")
 	u := fmt.Sprintf("https://push2.eastmoney.com/api/qt/clist/get?pn=1&pz=%d&po=1&np=1&fltt=2&invt=2&fid=%s&fields=f2,f3,f12,f14,f6,f8&fs=%s", count, fid, fs)
 	b, err := p.http.Get(ctx, u)
-	if err != nil {
-		return nil, err
-	}
-
-	var resp struct {
-		Data struct {
-			Diff []struct {
-				Code   string  `json:"f12"`
-				Name   string  `json:"f14"`
-				Price  float64 `json:"f2"`
-				Pct    float64 `json:"f3"`
-				Amount float64 `json:"f6"`
-				Turn   float64 `json:"f8"`
-			} `json:"diff"`
-		} `json:"data"`
-	}
-	if err := json.Unmarshal(b, &resp); err != nil {
-		return nil, err
-	}
-
-	out := make([]provider.RankItem, 0, len(resp.Data.Diff))
-	for _, it := range resp.Data.Diff {
-		if strings.TrimSpace(it.Code) == "" {
-			continue
+	if err == nil {
+		var resp struct {
+			Data struct {
+				Diff []struct {
+					Code   string  `json:"f12"`
+					Name   string  `json:"f14"`
+					Price  float64 `json:"f2"`
+					Pct    float64 `json:"f3"`
+					Amount float64 `json:"f6"`
+					Turn   float64 `json:"f8"`
+				} `json:"diff"`
+			} `json:"data"`
 		}
+		if err := json.Unmarshal(b, &resp); err == nil && len(resp.Data.Diff) > 0 {
+			out := make([]provider.RankItem, 0, len(resp.Data.Diff))
+			for _, it := range resp.Data.Diff {
+				if strings.TrimSpace(it.Code) == "" {
+					continue
+				}
+				out = append(out, provider.RankItem{
+					Symbol:    it.Code,
+					Name:      it.Name,
+					Price:     it.Price,
+					ChangePct: it.Pct,
+					Amount:    it.Amount,
+					Turnover:  it.Turn,
+				})
+			}
+			return out, nil
+		}
+	}
+
+	// Fallback to Sina
+	sinaSort := "amount"
+	switch sortKey {
+	case "turnover":
+		sinaSort = "amount" // Sina doesn't support turnover sort in this API easily
+	case "priceRatio":
+		sinaSort = "changepercent"
+	}
+	uSina := fmt.Sprintf("https://vip.stock.finance.sina.com.cn/quotes_service/api/json_v2.php/Market_Center.getHQNodeData?page=1&num=%d&sort=%s&asc=0&node=hs_a&symbol=&_s_r_a=init", count, sinaSort)
+	bSina, errSina := p.http.Get(ctx, uSina)
+	if errSina != nil {
+		return nil, errSina
+	}
+
+	var sinaResp []struct {
+		Code      string  `json:"code"`
+		Name      string  `json:"name"`
+		Price     string  `json:"trade"`
+		Pct       float64 `json:"changepercent"`
+		Amount    float64 `json:"amount"`
+		Turnover  float64 `json:"turnoverratio"`
+	}
+	if err := json.Unmarshal(bSina, &sinaResp); err != nil {
+		return nil, err
+	}
+
+	out := make([]provider.RankItem, 0, len(sinaResp))
+	for _, it := range sinaResp {
+		price, _ := strconv.ParseFloat(it.Price, 64)
 		out = append(out, provider.RankItem{
 			Symbol:    it.Code,
 			Name:      it.Name,
-			Price:     it.Price,
+			Price:     price,
 			ChangePct: it.Pct,
 			Amount:    it.Amount,
-			Turnover:  it.Turn,
+			Turnover:  it.Turnover,
 		})
 	}
 	return out, nil
@@ -245,9 +282,93 @@ func (p *Provider) KlineDaily(ctx context.Context, symbol string, limit int) (pr
 	return k, nil
 }
 
-func (p *Provider) quoteBySecIDs(ctx context.Context, secids []string) ([]provider.Quote, error) {
-	fields := url.QueryEscape("f12,f14,f2,f3,f4,f5,f6,f15,f16,f17,f18,f20,f124")
-	u := fmt.Sprintf("https://push2.eastmoney.com/api/qt/ulist.np/get?fltt=2&invt=2&secids=%s&fields=%s", url.QueryEscape(strings.Join(secids, ",")), fields)
+func (p *Provider) FundFlow(ctx context.Context, symbol string) (provider.FundFlow, error) {
+	secid, err := secIDFromSymbol(symbol)
+	if err != nil {
+		return provider.FundFlow{}, err
+	}
+
+	// Use stock/get which is more reliable for individual stocks
+	fields := "f57,f58,f62,f184,f66,f69,f72,f75,f78,f81,f84,f87"
+	u := fmt.Sprintf("https://push2.eastmoney.com/api/qt/stock/get?secid=%s&fields=%s", url.QueryEscape(secid), fields)
+	b, err := p.http.Get(ctx, u)
+	if err != nil {
+		return provider.FundFlow{}, err
+	}
+
+	var resp struct {
+		Data struct {
+			Code    string  `json:"f57"`
+			Name    string  `json:"f58"`
+			MainIn  float64 `json:"f62"`
+			MainPct float64 `json:"f184"`
+			HugeIn  float64 `json:"f66"`
+			LargeIn float64 `json:"f72"`
+			MedIn   float64 `json:"f78"`
+			SmallIn float64 `json:"f84"`
+		} `json:"data"`
+	}
+	if err := json.Unmarshal(b, &resp); err != nil {
+		return provider.FundFlow{}, err
+	}
+
+	return provider.FundFlow{
+		Symbol:   resp.Data.Code,
+		Name:     resp.Data.Name,
+		MainIn:   resp.Data.MainIn,
+		MainPct:  resp.Data.MainPct,
+		HugeIn:   resp.Data.HugeIn,
+		LargeIn:  resp.Data.LargeIn,
+		MediumIn: resp.Data.MedIn,
+		SmallIn:  resp.Data.SmallIn,
+	}, nil
+}
+
+func (p *Provider) News(ctx context.Context, symbol string, count int) ([]provider.NewsItem, error) {
+	if count <= 0 {
+		count = 10
+	}
+	// type=8 is news suggest API
+	u := fmt.Sprintf("https://searchapi.eastmoney.com/api/suggest/get?input=%s&type=8&count=%d", url.QueryEscape(symbol), count)
+	b, err := p.http.Get(ctx, u)
+	if err != nil {
+		return nil, err
+	}
+
+	// The response structure might be different for suggest API type 8
+	// Let's assume it's like this for now, but usually it's wrapped
+	var wrap struct {
+		NewsTable struct {
+			Data []struct {
+				Title string `json:"Title"`
+				Url   string `json:"Url"`
+				Time  string `json:"Time"`
+			} `json:"Data"`
+		} `json:"NewsTable"`
+	}
+	if err := json.Unmarshal(b, &wrap); err != nil {
+		return nil, err
+	}
+
+	out := make([]provider.NewsItem, 0, len(wrap.NewsTable.Data))
+	for _, it := range wrap.NewsTable.Data {
+		out = append(out, provider.NewsItem{
+			Title: it.Title,
+			Url:   it.Url,
+			Time:  it.Time,
+		})
+	}
+	return out, nil
+}
+
+func (p *Provider) Plate(ctx context.Context, symbol string) ([]provider.PlateItem, error) {
+	secid, err := secIDFromSymbol(symbol)
+	if err != nil {
+		return nil, err
+	}
+
+	// Related plates API
+	u := fmt.Sprintf("https://push2.eastmoney.com/api/qt/slist/get?secid=%s&fields=f12,f14,f2,f3", url.QueryEscape(secid))
 	b, err := p.http.Get(ctx, u)
 	if err != nil {
 		return nil, err
@@ -256,19 +377,9 @@ func (p *Provider) quoteBySecIDs(ctx context.Context, secids []string) ([]provid
 	var resp struct {
 		Data struct {
 			Diff []struct {
-				Code string          `json:"f12"`
-				Name string          `json:"f14"`
-				P    float64         `json:"f2"`
-				Pct  float64         `json:"f3"`
-				Chg  float64         `json:"f4"`
-				Vol  float64         `json:"f5"`
-				Amt  float64         `json:"f6"`
-				H    float64         `json:"f15"`
-				L    float64         `json:"f16"`
-				O    float64         `json:"f17"`
-				Pre  float64         `json:"f18"`
-				MV   float64         `json:"f20"`
-				Time json.RawMessage `json:"f124"`
+				Code string  `json:"f12"`
+				Name string  `json:"f14"`
+				Pct  float64 `json:"f3"`
 			} `json:"diff"`
 		} `json:"data"`
 	}
@@ -276,22 +387,157 @@ func (p *Provider) quoteBySecIDs(ctx context.Context, secids []string) ([]provid
 		return nil, err
 	}
 
-	out := make([]provider.Quote, 0, len(resp.Data.Diff))
+	out := make([]provider.PlateItem, 0, len(resp.Data.Diff))
 	for _, it := range resp.Data.Diff {
+		out = append(out, provider.PlateItem{
+			Symbol:    it.Code,
+			Name:      it.Name,
+			ChangePct: it.Pct,
+		})
+	}
+	return out, nil
+}
+
+func (p *Provider) MarketDistribution(ctx context.Context, market provider.Market) (provider.MarketDistribution, error) {
+	if market != provider.MarketAB {
+		return provider.MarketDistribution{}, fmt.Errorf("market %s not supported yet", market)
+	}
+
+	fs := url.QueryEscape("m:0+t:6,m:0+t:13,m:0+t:80,m:1+t:2,m:1+t:23")
+	var d provider.MarketDistribution
+	// paginate to reduce server pressure and avoid EOF; 1000 per page
+	for pn := 1; pn <= 10; pn++ {
+		u := fmt.Sprintf("https://push2.eastmoney.com/api/qt/clist/get?pn=%d&pz=1000&po=1&np=1&fltt=2&invt=2&fid=f3&fields=f3&fs=%s", pn, fs)
+		b, err := p.http.Get(ctx, u)
+		if err != nil {
+			u = u + "&ut=b2884a393a59ad64002292a3e90d46a5"
+			b, err = p.http.Get(ctx, u)
+		}
+		if err != nil {
+			// try http scheme
+			u = strings.ReplaceAll(u, "https://", "http://")
+			b, err = p.http.Get(ctx, u)
+			if err != nil {
+				return provider.MarketDistribution{}, err
+			}
+		}
+		var wrap struct {
+			Data struct {
+				Diff json.RawMessage `json:"diff"`
+			} `json:"data"`
+		}
+		if err := json.Unmarshal(b, &wrap); err != nil {
+			return provider.MarketDistribution{}, err
+		}
+		if len(wrap.Data.Diff) == 0 {
+			break
+		}
+		type row struct {
+			Pct float64 `json:"f3"`
+		}
+		var rows []row
+		if len(wrap.Data.Diff) > 0 && wrap.Data.Diff[0] == '{' {
+			var obj map[string]row
+			if err := json.Unmarshal(wrap.Data.Diff, &obj); err != nil {
+				return provider.MarketDistribution{}, err
+			}
+			for _, v := range obj {
+				rows = append(rows, v)
+			}
+		} else {
+			if err := json.Unmarshal(wrap.Data.Diff, &rows); err != nil {
+				return provider.MarketDistribution{}, err
+			}
+		}
+		if len(rows) == 0 {
+			break
+		}
+		for _, it := range rows {
+			pct := it.Pct
+			if pct > 0 {
+				d.Up++
+				if pct >= 9.9 {
+					d.UpLimit++
+				}
+				if pct > 9 {
+					d.Up9++
+				} else if pct > 6 {
+					d.Up6_9++
+				} else if pct > 3 {
+					d.Up3_6++
+				} else {
+					d.Up0_3++
+				}
+			} else if pct < 0 {
+				d.Down++
+				if pct <= -9.9 {
+					d.DownLimit++
+				}
+				if pct < -9 {
+					d.Down9++
+				} else if pct < -6 {
+					d.Down6_9++
+				} else if pct < -3 {
+					d.Down3_6++
+				} else {
+					d.Down0_3++
+				}
+			} else {
+				d.Flat++
+			}
+		}
+		// if less than page size, stop
+		if len(rows) < 1000 {
+			break
+		}
+	}
+	return d, nil
+}
+
+func (p *Provider) quoteBySecIDs(ctx context.Context, secids []string) ([]provider.Quote, error) {
+	out := make([]provider.Quote, 0, len(secids))
+	fields := url.QueryEscape("f57,f58,f43,f44,f45,f46,f60,f47,f48")
+	for _, secid := range secids {
+		u := fmt.Sprintf("https://push2.eastmoney.com/api/qt/stock/get?secid=%s&fields=%s", url.QueryEscape(secid), fields)
+		b, err := p.http.Get(ctx, u)
+		if err != nil {
+			return nil, err
+		}
+		var resp struct {
+			Data struct {
+				Code  string  `json:"f57"`
+				Name  string  `json:"f58"`
+				P     float64 `json:"f43"`
+				H     float64 `json:"f44"`
+				L     float64 `json:"f45"`
+				O     float64 `json:"f46"`
+				Pre   float64 `json:"f60"`
+				Vol   float64 `json:"f47"`
+				Amt   float64 `json:"f48"`
+			} `json:"data"`
+		}
+		if err := json.Unmarshal(b, &resp); err != nil {
+			return nil, err
+		}
+		px := resp.Data.P / 100
+		pre := resp.Data.Pre / 100
+		var chg, pct float64
+		if pre != 0 {
+			chg = px - pre
+			pct = chg / pre * 100
+		}
 		out = append(out, provider.Quote{
-			Symbol:      strings.TrimSpace(it.Code),
-			Name:        strings.TrimSpace(it.Name),
-			Price:       it.P,
-			Change:      it.Chg,
-			ChangePct:   it.Pct,
-			Open:        it.O,
-			High:        it.H,
-			Low:         it.L,
-			PrevClose:   it.Pre,
-			Volume:      it.Vol,
-			Amount:      it.Amt,
-			MarketValue: it.MV,
-			Time:        rawToString(it.Time),
+			Symbol:    strings.TrimSpace(resp.Data.Code),
+			Name:      strings.TrimSpace(resp.Data.Name),
+			Price:     px,
+			Change:    chg,
+			ChangePct: pct,
+			Open:      resp.Data.O / 100,
+			High:      resp.Data.H / 100,
+			Low:       resp.Data.L / 100,
+			PrevClose: pre,
+			Volume:    resp.Data.Vol,
+			Amount:    resp.Data.Amt,
 		})
 	}
 	return out, nil

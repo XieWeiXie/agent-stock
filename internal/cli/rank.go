@@ -8,6 +8,8 @@ import (
 
 	"agent-stock/internal/format"
 	"agent-stock/internal/provider/eastmoney"
+	"agent-stock/internal/provider/multi"
+	"agent-stock/internal/provider/sina"
 )
 
 type RankCommand struct{}
@@ -42,14 +44,14 @@ func (c *RankCommand) Run(ctx context.Context, args []string, out io.Writer, err
 		return err
 	}
 
-	p := eastmoney.New()
+	p := multi.New(eastmoney.New(), sina.New())
 	items, err := p.Rank(ctx, market, *sortFlag, *countFlag)
 	if err != nil {
 		return err
 	}
 
 	t := format.NewTable(out)
-	t.Header("SYMBOL", "NAME", "PRICE", "CHG%", "AMOUNT", "TURN%")
+	t.Header("SYMBOL(代码)", "NAME(名称)", "PRICE(价格)", "CHG%(涨跌幅)", "AMOUNT(成交额)", "TURN%(换手)")
 	for _, it := range items {
 		t.Row(it.Symbol, it.Name, f2(it.Price), f2(it.ChangePct), f0(it.Amount), f2(it.Turnover))
 	}

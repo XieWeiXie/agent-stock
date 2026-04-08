@@ -8,6 +8,8 @@ import (
 
 	"agent-stock/internal/format"
 	"agent-stock/internal/provider/eastmoney"
+	"agent-stock/internal/provider/multi"
+	"agent-stock/internal/provider/sina"
 )
 
 type IndexCommand struct{}
@@ -40,14 +42,14 @@ func (c *IndexCommand) Run(ctx context.Context, args []string, out io.Writer, er
 		return err
 	}
 
-	p := eastmoney.New()
+	p := multi.New(eastmoney.New(), sina.New())
 	items, err := p.Index(ctx, market)
 	if err != nil {
 		return err
 	}
 
 	t := format.NewTable(out)
-	t.Header("SYMBOL", "NAME", "PRICE", "CHG", "CHG%")
+	t.Header("SYMBOL(代码)", "NAME(名称)", "PRICE(价格)", "CHG(涨跌额)", "CHG%(涨跌幅)")
 	for _, q := range items {
 		t.Row(q.Symbol, q.Name, f2(q.Price), f2(q.Change), f2(q.ChangePct))
 	}

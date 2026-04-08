@@ -69,13 +69,13 @@ func availableCommands() map[string]Command {
 		NewRankCommand(),
 		NewIndexCommand(),
 		NewKlineCommand(),
-		NewPlaceholderCommand("chgdiagram", "涨跌分布（占位）"),
+		NewDetailCommand(),
+		NewNewsCommand(),
+		NewFundFlowCommand(),
+		NewPlateCommand(),
+		NewChgDiagramCommand(),
 		NewPlaceholderCommand("heatmap", "板块热力图（占位）"),
 		NewPlaceholderCommand("query", "条件选股（占位）"),
-		NewPlaceholderCommand("detail", "个股详情（占位）"),
-		NewPlaceholderCommand("plate", "相关板块（占位）"),
-		NewPlaceholderCommand("news", "个股资讯（占位）"),
-		NewPlaceholderCommand("fundflow", "资金流向（占位）"),
 	}
 	m := make(map[string]Command, len(cmds))
 	for _, c := range cmds {
@@ -86,16 +86,42 @@ func availableCommands() map[string]Command {
 
 func printRootUsage(w io.Writer) {
 	cmds := availableCommands()
-	names := make([]string, 0, len(cmds))
-	for name := range cmds {
-		names = append(names, name)
+	desired := []string{
+		"chgdiagram",
+		"detail",
+		"fundflow",
+		"heatmap",
+		"index",
+		"kline",
+		"news",
+		"plate",
+		"query",
+		"quote",
+		"rank",
+		"search",
 	}
-	sort.Strings(names)
+	// Build final ordered list: first desired order, then any remaining alphabetically
+	seen := make(map[string]bool, len(cmds))
+	ordered := make([]string, 0, len(cmds))
+	for _, name := range desired {
+		if _, ok := cmds[name]; ok {
+			ordered = append(ordered, name)
+			seen[name] = true
+		}
+	}
+	rest := make([]string, 0, len(cmds))
+	for name := range cmds {
+		if !seen[name] {
+			rest = append(rest, name)
+		}
+	}
+	sort.Strings(rest)
+	ordered = append(ordered, rest...)
 
 	fmt.Fprintf(w, "%s - 面向 AI Agent 的股市数据命令行工具（Go 复刻版）\n\n", appName)
 	fmt.Fprintf(w, "Usage:\n  %s [--help|-h] [--version|-v]\n  %s <command> [args]\n\n", appName, appName)
 	fmt.Fprintf(w, "Commands:\n")
-	for _, name := range names {
+	for _, name := range ordered {
 		c := cmds[name]
 		fmt.Fprintf(w, "  %-10s %s\n", c.Name(), c.Synopsis())
 	}

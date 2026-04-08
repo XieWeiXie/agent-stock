@@ -19,3 +19,6 @@ func parseMarket(s string) (provider.Market, error) {
 		return "", fmt.Errorf("invalid market: %s (allowed: ab|hk|us)", s)
 	}
 }
+
+func f2(v float64) string { return fmt.Sprintf("%.2f", v) }
+func f0(v float64) string { return fmt.Sprintf("%.0f", v) }
