@@ -69,11 +69,13 @@ func availableCommands() map[string]Command {
 		NewRankCommand(),
 		NewIndexCommand(),
 		NewKlineCommand(),
+		NewWKlineCommand(),
 		NewDetailCommand(),
 		NewNewsCommand(),
 		NewFundFlowCommand(),
 		NewPlateCommand(),
 		NewChgDiagramCommand(),
+		NewScreenCommand(),
 		NewPlaceholderCommand("heatmap", "板块热力图（占位）"),
 		NewPlaceholderCommand("query", "条件选股（占位）"),
 	}
@@ -98,7 +100,9 @@ func printRootUsage(w io.Writer) {
 		"query",
 		"quote",
 		"rank",
+		"screen",
 		"search",
+		"wkline",
 	}
 	// Build final ordered list: first desired order, then any remaining alphabetically
 	seen := make(map[string]bool, len(cmds))

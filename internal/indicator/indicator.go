@@ -4,6 +4,26 @@ import (
 	"math"
 )
 
+// MA calculates Simple Moving Average
+func MA(values []float64, period int) []float64 {
+	out := make([]float64, len(values))
+	if len(values) == 0 || period <= 0 {
+		return out
+	}
+	for i := range values {
+		if i+1 < period {
+			continue
+		}
+		sum := 0.0
+		for j := i + 1 - period; j <= i; j++ {
+			sum += values[j]
+		}
+		out[i] = sum / float64(period)
+	}
+	return out
+}
+
+// EMA calculates Exponential Moving Average
 func EMA(values []float64, period int) []float64 {
 	out := make([]float64, len(values))
 	if len(values) == 0 {
@@ -157,4 +177,59 @@ func rsiFromAvg(avgGain, avgLoss float64) float64 {
 	}
 	rs := avgGain / avgLoss
 	return 100 - (100 / (1 + rs))
+}
+
+// MACD calculates MACD indicator
+// Returns DIF (MACD line), DEA (signal line), and MACD (histogram)
+type MACDPoint struct {
+	DIF float64 // MACD line (EMA12 - EMA26)
+	DEA float64 // Signal line (EMA of DIF)
+	MACD float64 // Histogram (2 * (DIF - DEA))
+}
+
+func MACD(close []float64) []MACDPoint {
+	out := make([]MACDPoint, len(close))
+	if len(close) < 26 {
+		return out
+	}
+
+	ema12 := EMA(close, 12)
+	ema26 := EMA(close, 26)
+
+	dif := make([]float64, len(close))
+	for i := range close {
+		dif[i] = ema12[i] - ema26[i]
+	}
+
+	// DEA is EMA of DIF with period 9
+	dea := EMA(dif, 9)
+
+	for i := range close {
+		out[i].DIF = dif[i]
+		out[i].DEA = dea[i]
+		out[i].MACD = 2 * (dif[i] - dea[i])
+	}
+
+	return out
+}
+
+// ATR calculates Average True Range
+func ATR(high, low, close []float64, period int) []float64 {
+	if len(high) != len(low) || len(high) != len(close) || len(high) < 2 {
+		return make([]float64, len(high))
+	}
+
+	tr := make([]float64, len(high))
+	for i := range high {
+		if i == 0 {
+			tr[i] = high[i] - low[i]
+		} else {
+			hL := math.Abs(high[i] - low[i])
+			hC := math.Abs(high[i] - close[i-1])
+			lC := math.Abs(low[i] - close[i-1])
+			tr[i] = math.Max(hL, math.Max(hC, lC))
+		}
+	}
+
+	return MA(tr, period)
 }

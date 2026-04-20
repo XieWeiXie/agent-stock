@@ -11,7 +11,6 @@ import (
 
 var defaultTransport = &http.Transport{
 	Proxy:               http.ProxyFromEnvironment,
-	DisableKeepAlives:   true,
 	TLSHandshakeTimeout: 10 * time.Second,
 }
 var _ = defaultTransport

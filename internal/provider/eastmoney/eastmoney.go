@@ -7,6 +7,7 @@ import (
 	"net/url"
 	"strconv"
 	"strings"
+	"time"
 
 	"agent-stock/internal/netx"
 	"agent-stock/internal/provider"
@@ -132,18 +133,19 @@ func (p *Provider) Rank(ctx context.Context, market provider.Market, sortKey str
 	}
 
 	fs := url.QueryEscape("m:0+t:6,m:0+t:13,m:0+t:80,m:1+t:2,m:1+t:23")
-	u := fmt.Sprintf("https://push2.eastmoney.com/api/qt/clist/get?pn=1&pz=%d&po=1&np=1&fltt=2&invt=2&fid=%s&fields=f2,f3,f12,f14,f6,f8&fs=%s", count, fid, fs)
+	u := fmt.Sprintf("https://push2.eastmoney.com/api/qt/clist/get?pn=1&pz=%d&po=1&np=1&fltt=2&invt=2&fid=%s&fields=f2,f3,f12,f14,f6,f8,f20&fs=%s", count, fid, fs)
 	b, err := p.http.Get(ctx, u)
 	if err == nil {
 		var resp struct {
 			Data struct {
 				Diff []struct {
-					Code   string  `json:"f12"`
-					Name   string  `json:"f14"`
-					Price  float64 `json:"f2"`
-					Pct    float64 `json:"f3"`
-					Amount float64 `json:"f6"`
-					Turn   float64 `json:"f8"`
+					Code       string  `json:"f12"`
+					Name       string  `json:"f14"`
+					Price      float64 `json:"f2"`
+					Pct        float64 `json:"f3"`
+					Amount     float64 `json:"f6"`
+					Turn       float64 `json:"f8"`
+					MarketVal  float64 `json:"f20"` // 总市值，单位：元
 				} `json:"diff"`
 			} `json:"data"`
 		}
@@ -154,12 +156,13 @@ func (p *Provider) Rank(ctx context.Context, market provider.Market, sortKey str
 					continue
 				}
 				out = append(out, provider.RankItem{
-					Symbol:    it.Code,
-					Name:      it.Name,
-					Price:     it.Price,
-					ChangePct: it.Pct,
-					Amount:    it.Amount,
-					Turnover:  it.Turn,
+					Symbol:      it.Code,
+					Name:        it.Name,
+					Price:       it.Price,
+					ChangePct:   it.Pct,
+					Amount:      it.Amount,
+					Turnover:    it.Turn,
+					MarketValue: it.MarketVal,
 				})
 			}
 			return out, nil
@@ -237,49 +240,294 @@ func (p *Provider) KlineDaily(ctx context.Context, symbol string, limit int) (pr
 
 	u := fmt.Sprintf("https://push2his.eastmoney.com/api/qt/stock/kline/get?secid=%s&fields1=f1,f2,f3,f4,f5,f6&fields2=f51,f52,f53,f54,f55,f56,f57,f58&klt=101&fqt=1&end=20500101&lmt=%d", url.QueryEscape(secid), limit)
 	b, err := p.http.Get(ctx, u)
+	if err == nil {
+		var resp struct {
+			Data struct {
+				Code   string   `json:"code"`
+				Name   string   `json:"name"`
+				Klines []string `json:"klines"`
+			} `json:"data"`
+		}
+		if err := json.Unmarshal(b, &resp); err == nil && len(resp.Data.Klines) > 0 {
+			k := provider.Kline{
+				Symbol: symbol,
+				Name:   resp.Data.Name,
+				Bars:   make([]provider.KlineBar, 0, len(resp.Data.Klines)),
+			}
+			for _, row := range resp.Data.Klines {
+				parts := strings.Split(row, ",")
+				if len(parts) < 7 {
+					continue
+				}
+				open, _ := strconv.ParseFloat(parts[1], 64)
+				closep, _ := strconv.ParseFloat(parts[2], 64)
+				high, _ := strconv.ParseFloat(parts[3], 64)
+				low, _ := strconv.ParseFloat(parts[4], 64)
+				vol, _ := strconv.ParseFloat(parts[5], 64)
+				amt, _ := strconv.ParseFloat(parts[6], 64)
+				k.Bars = append(k.Bars, provider.KlineBar{
+					Date:   parts[0],
+					Open:   open,
+					Close:  closep,
+					High:   high,
+					Low:    low,
+					Volume: vol,
+					Amount: amt,
+				})
+			}
+			return k, nil
+		}
+	}
+
+	// Fallback: use Sina daily kline
+	return p.klineDailyFromSina(ctx, symbol, limit)
+}
+
+// klineDailyFromSina fetches daily data from Sina
+func (p *Provider) klineDailyFromSina(ctx context.Context, symbol string, limit int) (provider.Kline, error) {
+	sinaSymbol := symbolToSina(symbol)
+	if sinaSymbol == "" {
+		return provider.Kline{}, fmt.Errorf("cannot convert symbol %s to sina format", symbol)
+	}
+
+	u := fmt.Sprintf("https://money.finance.sina.com.cn/quotes_service/api/json_v2.php/CN_MarketData.getKLineData?symbol=%s&scale=240&ma=no&datalen=%d", url.QueryEscape(sinaSymbol), limit)
+	b, err := p.http.Get(ctx, u)
+	if err != nil {
+		return provider.Kline{}, fmt.Errorf("sina daily kline failed: %w", err)
+	}
+
+	var dailyBars []sinaDailyBar
+	if err := json.Unmarshal(b, &dailyBars); err != nil {
+		return provider.Kline{}, fmt.Errorf("sina daily kline parse failed: %w", err)
+	}
+
+	if len(dailyBars) == 0 {
+		return provider.Kline{}, fmt.Errorf("no daily data from sina for %s", symbol)
+	}
+
+	bars := make([]provider.KlineBar, 0, len(dailyBars))
+	for _, db := range dailyBars {
+		open, _ := strconv.ParseFloat(db.Open, 64)
+		close, _ := strconv.ParseFloat(db.Close, 64)
+		high, _ := strconv.ParseFloat(db.High, 64)
+		low, _ := strconv.ParseFloat(db.Low, 64)
+		vol, _ := strconv.ParseFloat(db.Volume, 64)
+		bars = append(bars, provider.KlineBar{
+			Date:   db.Day,
+			Open:   open,
+			Close:  close,
+			High:   high,
+			Low:    low,
+			Volume: vol,
+			Amount: 0,
+		})
+	}
+
+	return provider.Kline{
+		Symbol: symbol,
+		Name:   "",
+		Bars:   bars,
+	}, nil
+}
+
+func (p *Provider) KlineWeekly(ctx context.Context, symbol string, limit int) (provider.Kline, error) {
+	if limit <= 0 {
+		limit = 52 // 默认取一年周线数据
+	}
+	if limit > 200 {
+		limit = 200
+	}
+
+	secid, err := secIDFromSymbol(symbol)
 	if err != nil {
 		return provider.Kline{}, err
 	}
 
-	var resp struct {
-		Data struct {
-			Code   string   `json:"code"`
-			Name   string   `json:"name"`
-			Klines []string `json:"klines"`
-		} `json:"data"`
+	// klt=102 表示周线数据
+	u := fmt.Sprintf("https://push2his.eastmoney.com/api/qt/stock/kline/get?secid=%s&fields1=f1,f2,f3,f4,f5,f6&fields2=f51,f52,f53,f54,f55,f56,f57,f58&klt=102&fqt=1&end=20500101&lmt=%d", url.QueryEscape(secid), limit)
+	b, err := p.http.Get(ctx, u)
+	if err == nil {
+		var resp struct {
+			Data struct {
+				Code   string   `json:"code"`
+				Name   string   `json:"name"`
+				Klines []string `json:"klines"`
+			} `json:"data"`
+		}
+		if err := json.Unmarshal(b, &resp); err == nil && len(resp.Data.Klines) > 0 {
+			k := provider.Kline{
+				Symbol: symbol,
+				Name:   resp.Data.Name,
+				Bars:   make([]provider.KlineBar, 0, len(resp.Data.Klines)),
+			}
+			for _, row := range resp.Data.Klines {
+				parts := strings.Split(row, ",")
+				if len(parts) < 7 {
+					continue
+				}
+				open, _ := strconv.ParseFloat(parts[1], 64)
+				closep, _ := strconv.ParseFloat(parts[2], 64)
+				high, _ := strconv.ParseFloat(parts[3], 64)
+				low, _ := strconv.ParseFloat(parts[4], 64)
+				vol, _ := strconv.ParseFloat(parts[5], 64)
+				amt, _ := strconv.ParseFloat(parts[6], 64)
+				k.Bars = append(k.Bars, provider.KlineBar{
+					Date:   parts[0],
+					Open:   open,
+					Close:  closep,
+					High:   high,
+					Low:    low,
+					Volume: vol,
+					Amount: amt,
+				})
+			}
+			return k, nil
+		}
+		// Eastmoney API returned data but empty klines or parse error
+		// Fall through to Sina fallback
 	}
-	if err := json.Unmarshal(b, &resp); err != nil {
+
+	// Fallback: use Sina daily data and aggregate to weekly
+	k, err := p.klineWeeklyFromSinaDaily(ctx, symbol, limit)
+	if err != nil {
+		// Return error with context so multi provider knows to try next provider
 		return provider.Kline{}, err
 	}
-
-	k := provider.Kline{
-		Symbol: symbol,
-		Name:   resp.Data.Name,
-		Bars:   make([]provider.KlineBar, 0, len(resp.Data.Klines)),
-	}
-
-	for _, row := range resp.Data.Klines {
-		parts := strings.Split(row, ",")
-		if len(parts) < 7 {
-			continue
-		}
-		open, _ := strconv.ParseFloat(parts[1], 64)
-		closep, _ := strconv.ParseFloat(parts[2], 64)
-		high, _ := strconv.ParseFloat(parts[3], 64)
-		low, _ := strconv.ParseFloat(parts[4], 64)
-		vol, _ := strconv.ParseFloat(parts[5], 64)
-		amt, _ := strconv.ParseFloat(parts[6], 64)
-		k.Bars = append(k.Bars, provider.KlineBar{
-			Date:   parts[0],
-			Open:   open,
-			Close:  closep,
-			High:   high,
-			Low:    low,
-			Volume: vol,
-			Amount: amt,
-		})
+	if len(k.Bars) == 0 {
+		return provider.Kline{}, fmt.Errorf("sina fallback returned empty bars")
 	}
 	return k, nil
+}
+
+// klineWeeklyFromSinaDaily fetches daily data from Sina and aggregates into weekly bars
+func (p *Provider) klineWeeklyFromSinaDaily(ctx context.Context, symbol string, limit int) (provider.Kline, error) {
+	// Convert symbol to sina format (sz002463 or sh600111)
+	sinaSymbol := symbolToSina(symbol)
+	if sinaSymbol == "" {
+		return provider.Kline{}, fmt.Errorf("cannot convert symbol %s to sina format", symbol)
+	}
+
+	// Fetch enough daily data to cover the weekly limit (5 trading days per week + buffer)
+	dailyLimit := limit*7 + 10
+	u := fmt.Sprintf("https://money.finance.sina.com.cn/quotes_service/api/json_v2.php/CN_MarketData.getKLineData?symbol=%s&scale=240&ma=no&datalen=%d", url.QueryEscape(sinaSymbol), dailyLimit)
+	b, err := p.http.Get(ctx, u)
+	if err != nil {
+		return provider.Kline{}, fmt.Errorf("sina kline HTTP failed: %w", err)
+	}
+
+	var dailyBars []sinaDailyBar
+	if err := json.Unmarshal(b, &dailyBars); err != nil {
+		return provider.Kline{}, fmt.Errorf("sina kline parse failed: %w", err)
+	}
+
+	if len(dailyBars) == 0 {
+		return provider.Kline{}, fmt.Errorf("no daily data from sina for %s", symbol)
+	}
+
+	// Aggregate daily bars into weekly bars
+	weeklyBars := aggregateWeekly(dailyBars)
+
+	// Trim to requested limit
+	if len(weeklyBars) > limit {
+		weeklyBars = weeklyBars[len(weeklyBars)-limit:]
+	}
+
+	return provider.Kline{
+		Symbol: symbol,
+		Name:   "",
+		Bars:   weeklyBars,
+	}, nil
+}
+
+type sinaDailyBar struct {
+	Day    string `json:"day"`
+	Open   string `json:"open"`
+	High   string `json:"high"`
+	Low    string `json:"low"`
+	Close  string `json:"close"`
+	Volume string `json:"volume"`
+}
+
+func aggregateWeekly(dailyBars []sinaDailyBar) []provider.KlineBar {
+	if len(dailyBars) == 0 {
+		return nil
+	}
+
+	var weeks []provider.KlineBar
+	var weekBars []sinaDailyBar
+
+	for _, bar := range dailyBars {
+		t, err := time.Parse("2006-01-02", bar.Day)
+		if err != nil {
+			continue
+		}
+
+		// Get the ISO week number and year
+		year, week := t.ISOWeek()
+
+		if len(weekBars) > 0 {
+			prevT, _ := time.Parse("2006-01-02", weekBars[0].Day)
+			prevYear, prevWeek := prevT.ISOWeek()
+			if year != prevYear || week != prevWeek {
+				// New week started, aggregate previous week
+				weeks = append(weeks, makeWeeklyBar(weekBars))
+				weekBars = weekBars[:0]
+			}
+		}
+
+		weekBars = append(weekBars, bar)
+	}
+
+	// Don't forget the last week
+	if len(weekBars) > 0 {
+		weeks = append(weeks, makeWeeklyBar(weekBars))
+	}
+
+	return weeks
+}
+
+func makeWeeklyBar(bars []sinaDailyBar) provider.KlineBar {
+	if len(bars) == 0 {
+		return provider.KlineBar{}
+	}
+	open, _ := strconv.ParseFloat(bars[0].Open, 64)
+	openHigh, _ := strconv.ParseFloat(bars[0].High, 64)
+	openLow, _ := strconv.ParseFloat(bars[0].Low, 64)
+	closePrice, _ := strconv.ParseFloat(bars[len(bars)-1].Close, 64)
+	vol, _ := strconv.ParseFloat(bars[0].Volume, 64)
+
+	w := provider.KlineBar{
+		Date:   bars[0].Day,
+		Open:   open,
+		High:   openHigh,
+		Low:    openLow,
+		Close:  closePrice,
+		Volume: vol,
+	}
+	for _, b := range bars {
+		high, _ := strconv.ParseFloat(b.High, 64)
+		low, _ := strconv.ParseFloat(b.Low, 64)
+		v, _ := strconv.ParseFloat(b.Volume, 64)
+		if high > w.High {
+			w.High = high
+		}
+		if low < w.Low {
+			w.Low = low
+		}
+		w.Volume += v
+	}
+	return w
+}
+
+func symbolToSina(symbol string) string {
+	symbol = strings.TrimSpace(symbol)
+	if len(symbol) != 6 || !isDigits(symbol) {
+		return ""
+	}
+	if strings.HasPrefix(symbol, "6") {
+		return "sh" + symbol
+	}
+	return "sz" + symbol
 }
 
 func (p *Provider) FundFlow(ctx context.Context, symbol string) (provider.FundFlow, error) {
@@ -610,4 +858,72 @@ func rawToString(v json.RawMessage) string {
 		return n.String()
 	}
 	return strings.Trim(string(v), "\"")
+}
+
+// GetMarketCaps fetches market cap for multiple stocks using the ulist API
+// Returns map of symbol -> market cap in 元 (yuan), or nil if API fails
+func (p *Provider) GetMarketCaps(ctx context.Context, symbols []string) map[string]float64 {
+	if len(symbols) == 0 {
+		return nil
+	}
+
+	// Build secids list
+	secids := make([]string, 0, len(symbols))
+	for _, sym := range symbols {
+		sym = strings.TrimSpace(sym)
+		if sym == "" {
+			continue
+		}
+		secid, err := secIDFromSymbol(sym)
+		if err != nil {
+			continue
+		}
+		secids = append(secids, secid)
+	}
+
+	if len(secids) == 0 {
+		return nil
+	}
+
+	// Batch query - ulist API supports up to ~200 stocks per request
+	result := make(map[string]float64)
+
+	// Process in batches of 50 to avoid URL too long
+	batchSize := 50
+	for i := 0; i < len(secids); i += batchSize {
+		end := i + batchSize
+		if end > len(secids) {
+			end = len(secids)
+		}
+		batch := secids[i:end]
+
+		secidsParam := strings.Join(batch, ",")
+		u := fmt.Sprintf("https://push2.eastmoney.com/api/qt/ulist.np/get?fltt=2&invt=2&fields=f12,f20&secids=%s", url.QueryEscape(secidsParam))
+
+		b, err := p.http.Get(ctx, u)
+		if err != nil {
+			continue
+		}
+
+		var resp struct {
+			Data struct {
+				Diff []struct {
+					Code  string  `json:"f12"`
+					MktVal float64 `json:"f20"` // 总市值，单位：元
+				} `json:"diff"`
+			} `json:"data"`
+		}
+		if err := json.Unmarshal(b, &resp); err != nil {
+			continue
+		}
+
+		for _, it := range resp.Data.Diff {
+			code := strings.TrimSpace(it.Code)
+			if code != "" {
+				result[code] = it.MktVal
+			}
+		}
+	}
+
+	return result
 }

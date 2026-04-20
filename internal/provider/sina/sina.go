@@ -81,6 +81,10 @@ func (p *Provider) KlineDaily(ctx context.Context, symbol string, limit int) (pr
 	return provider.Kline{}, fmt.Errorf("not supported by sina")
 }
 
+func (p *Provider) KlineWeekly(ctx context.Context, symbol string, limit int) (provider.Kline, error) {
+	return provider.Kline{}, fmt.Errorf("not supported by sina")
+}
+
 func (p *Provider) FundFlow(ctx context.Context, symbol string) (provider.FundFlow, error) {
 	return provider.FundFlow{}, fmt.Errorf("not supported by sina")
 }

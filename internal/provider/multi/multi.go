@@ -64,6 +64,16 @@ func (m *Provider) KlineDaily(ctx context.Context, symbol string, limit int) (pr
 	return provider.Kline{}, nil
 }
 
+func (m *Provider) KlineWeekly(ctx context.Context, symbol string, limit int) (provider.Kline, error) {
+	for _, p := range m.ps {
+		res, err := p.KlineWeekly(ctx, symbol, limit)
+		if err == nil && len(res.Bars) > 0 {
+			return res, nil
+		}
+	}
+	return provider.Kline{}, nil
+}
+
 func (m *Provider) FundFlow(ctx context.Context, symbol string) (provider.FundFlow, error) {
 	for _, p := range m.ps {
 		res, err := p.FundFlow(ctx, symbol)

@@ -33,12 +33,13 @@ type Quote struct {
 }
 
 type RankItem struct {
-	Symbol    string
-	Name      string
-	Price     float64
-	ChangePct float64
-	Amount    float64
-	Turnover  float64
+	Symbol      string
+	Name        string
+	Price       float64
+	ChangePct   float64
+	Amount      float64
+	Turnover    float64
+	MarketValue float64 // 总市值，单位：元
 }
 
 type KlineBar struct {
@@ -103,6 +104,7 @@ type Provider interface {
 	Rank(ctx context.Context, market Market, sort string, count int) ([]RankItem, error)
 	Index(ctx context.Context, market Market) ([]Quote, error)
 	KlineDaily(ctx context.Context, symbol string, limit int) (Kline, error)
+	KlineWeekly(ctx context.Context, symbol string, limit int) (Kline, error)
 	FundFlow(ctx context.Context, symbol string) (FundFlow, error)
 	News(ctx context.Context, symbol string, count int) ([]NewsItem, error)
 	Plate(ctx context.Context, symbol string) ([]PlateItem, error)
